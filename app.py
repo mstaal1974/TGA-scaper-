@@ -4,101 +4,63 @@ from bs4 import BeautifulSoup
 import pandas as pd
 import time
 import random
+from fake_useragent import UserAgent
 
-st.set_page_config(page_title="TGA Scraper Pro", page_icon="🇦🇺")
+def get_stealth_session():
+    session = requests.Session()
+    ua = UserAgent()
+    session.headers.update({
+        "User-Agent": ua.random,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1"
+    })
+    return session
 
-# --- UI SETUP ---
-st.title("TGA Classification Scraper")
-st.markdown("Extracts **ANZSCO** and **Occupations** to match your Excel format.")
-
-# Input for multiple codes
-input_codes = st.text_area("Paste Qualification Codes (one per line or comma-separated)", 
-                          placeholder="MSL20122\nMSL30122", height=150)
-
-# --- SCRAPER LOGIC ---
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Firefox/119.0"
-]
-
-def scrape_tga_details(code):
+def scrape_tga_stealth(code, session):
     url = f"https://training.gov.au/Training/Details/{code}"
-    headers = {"User-Agent": random.choice(USER_AGENTS)}
-    
     try:
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return {"Qualification Code": code, "Error": f"Status {response.status_code}"}
+        # Randomized wait between 3-7 seconds to mimic human browsing
+        time.sleep(random.uniform(3, 7))
         
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Format the result to match your CSV headers exactly
-        data = {
-            "Qualification Code": code,
-            "ANZSCO Identifier": "Not Found",
-            "Taxonomy - Occupation": "Not Found"
-        }
-        
-        # Locate the Classifications table rows
-        rows = soup.find_all('tr')
-        for row in rows:
-            cells = row.find_all('td')
-            if len(cells) >= 3:
-                scheme = cells[0].get_text(strip=True)
-                val_code = cells[1].get_text(strip=True)
-                val_text = cells[2].get_text(strip=True)
-                
-                if "ANZSCO Identifier" in scheme:
-                    # Formats like "311400 - Science Technicians"
-                    data["ANZSCO Identifier"] = f"{val_code} - {val_text}"
-                
-                elif "Taxonomy - Occupation" in scheme:
-                    # This captures the full comma-separated list from your image
-                    data["Taxonomy - Occupation"] = val_text
-                    
-        return data
+        response = session.get(url, timeout=20)
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            # Initialize with your exact CSV column names
+            data = {"Qualification Code": code, "ANZSCO Identifier": "N/A", "Taxonomy - Occupation": "N/A"}
+            
+            rows = soup.find_all('tr')
+            for row in rows:
+                cells = row.find_all('td')
+                if len(cells) >= 3:
+                    label = cells[0].get_text(strip=True)
+                    if "ANZSCO Identifier" in label:
+                        data["ANZSCO Identifier"] = f"{cells[1].get_text(strip=True)} - {cells[2].get_text(strip=True)}"
+                    elif "Taxonomy - Occupation" in label:
+                        data["Taxonomy - Occupation"] = cells[2].get_text(strip=True)
+            return data
+        return {"Qualification Code": code, "Error": f"Status {response.status_code}"}
     except Exception as e:
         return {"Qualification Code": code, "Error": str(e)}
 
-# --- EXECUTION ---
-if st.button("Run Extraction"):
-    # Clean the input codes
-    codes = [c.strip() for c in input_codes.replace(",", "\n").split("\n") if c.strip()]
+# Streamlit UI
+st.title("TGA Accurate CSV Extractor")
+input_codes = st.text_area("Enter Codes (one per line)")
+
+if st.button("Extract Data"):
+    codes = [c.strip() for c in input_codes.split("\n") if c.strip()]
+    results = []
+    session = get_stealth_session()
     
-    if not codes:
-        st.warning("Please enter at least one code.")
-    else:
-        results = []
-        progress_text = st.empty()
-        bar = st.progress(0)
-        
-        for i, code in enumerate(codes):
-            progress_text.text(f"Processing {code} ({i+1}/{len(codes)})...")
-            res = scrape_tga_details(code)
-            results.append(res)
-            
-            # Update progress
-            bar.progress((i + 1) / len(codes))
-            
-            # RANDOM DELAY to prevent blocking
-            # 2 to 4 seconds is usually enough for TGA
-            if i < len(codes) - 1:
-                time.sleep(random.uniform(2, 4))
-        
-        # Create DataFrame
-        df = pd.DataFrame(results)
-        
-        # Show results
-        st.subheader("Data Preview")
-        st.dataframe(df)
-        
-        # Download Button (Strictly matching your CSV format)
-        csv_data = df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Scraped Data (CSV)",
-            data=csv_data,
-            file_name="tga_occupations_output.csv",
-            mime="text/csv"
-        )
-        st.success("Extraction Complete!")
+    for code in codes:
+        st.write(f"Processing {code}...")
+        res = scrape_tga_stealth(code, session)
+        results.append(res)
+    
+    df = pd.DataFrame(results)
+    st.dataframe(df)
+    
+    # Matching your exact CSV format
+    csv = df.to_csv(index=False).encode('utf-8')
+    st.download_button("Download CSV", data=csv, file_name="output.csv", mime="text/csv")
